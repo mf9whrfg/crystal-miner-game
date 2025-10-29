@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ферма Кристаллов</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Inter Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        /* Пользовательский стиль для градиента фона */
+        .bg-miner {
+            background: linear-gradient(135deg, #1f2937 0%, #0d0e12 100%);
+        }
+        /* Анимация клика (кратковременное увеличение) */
+        .crystal-bounce:active {
+            transform: scale(1.05);
+            transition: transform 0.1s ease-out;
+        }
+        /* Стили для кастомного скроллбара */
+        .custom-scroll::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scroll::-webkit-scrollbar-thumb {
+            background-color: #3b82f6;
+            border-radius: 10px;
+        }
+        .custom-scroll::-webkit-scrollbar-track {
+            background: #1f2937;
+        }
+    </style>
+    <!-- Firebase Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // --- Глобальные переменные Firebase (ОБЯЗАТЕЛЬНО ИСПОЛЬЗОВАТЬ) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db = null;
+        let auth = null;
+        let currentUserId = null;
+        let docRef = null;
+        let isSaving = false;
+        
+        // --- Глобальное состояние игры ---
+        window.gameState = {
+            crystals: 0,
+            clickPower: 1, // Кристаллов за клик
+            drillCount: 0, // Количество автоматических буров
+            cps: 0,        // Кристаллов в секунду
+            upgrades: {}   // Купленные улучшения
+        };
+
+        window.gameData = {
+            // Стоимость буров (автодобыча)
+            drillCost: 10,
+            drillCps: 1,
+            // Улучшения клика
+            clickUpgrades: [
+                { id: 'click1', name: 'Магнитный Адаптер', cost: 50, multiplier: 2, currentLevel: 0, maxLevel: 5 },
+                { id: 'click2', name: 'Лазерная Гравировка', cost: 500, multiplier: 3, currentLevel: 0, maxLevel: 3 }
+            ],
+            // Улучшения CPS (буров)
+            cpsUpgrades: [
+                { id: 'cps1', name: 'Система Охлаждения', cost: 100, multiplier: 1.5, currentLevel: 0, maxLevel: 5 },
+                { id: 'cps2', name: 'Квантовый Чип', cost: 1000, multiplier: 2, currentLevel: 0, maxLevel: 3 }
+            ]
+        };
+        
+        // --- ФУНКЦИИ FIREBASE ---
+
+        async function initFirebase() {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Аутентификация
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                currentUserId = auth.currentUser?.uid || 'anonymous';
+                
+                // Устанавливаем ссылку на документ
+                // Путь: /artifacts/{appId}/users/{userId}/game_state/miner_progress
+                docRef = doc(db, 'artifacts', appId, 'users', currentUserId, 'game_state', 'miner_progress');
+                
+                console.log(`Firebase инициализирован. ID пользователя: ${currentUserId}`);
+                document.getElementById('user-id').textContent = `ID: ${currentUserId.substring(0, 8)}...`;
+                
+                // Запуск слушателя
+                startSnapshotListener();
+            } catch (error) {
+                console.error("Ошибка инициализации Firebase или аутентификации:", error);
+                document.getElementById('loading-state').textContent = 'Ошибка загрузки (см. консоль).';
+            }
+        }
+
+        function startSnapshotListener() {
+            if (!docRef) return;
+            
+            // onSnapshot для получения начальных данных и подписки на изменения
+            onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    // Загружаем сохраненное состояние
+                    const loadedState = docSnap.data();
+                    window.gameState = { ...window.gameState, ...loadedState };
+                    
+                    // Применяем улучшения, чтобы обновить clickPower и cps
+                    recalculateStats();
+                    console.log("Состояние игры загружено/обновлено из Firestore.");
+                    document.getElementById('loading-state').classList.add('hidden');
+                    document.getElementById('game-container').classList.remove('hidden');
+                } else {
+                    // Если документа нет, создаем начальное состояние
+                    console.log("Новый пользователь. Создание начального состояния.");
+                    saveGameState();
+                    document.getElementById('loading-state').classList.add('hidden');
+                    document.getElementById('game-container').classList.remove('hidden');
+                }
+                updateUI();
+            }, (error) => {
+                console.error("Ошибка при получении данных Firestore:", error);
+            });
+        }
+
+        window.saveGameState = async function() {
+            if (!docRef || isSaving) return;
+            
+            isSaving = true;
+            try {
+                // Оставляем только нужные для сохранения поля
+                const dataToSave = {
+                    crystals: window.gameState.crystals,
+                    clickPower: window.gameState.clickPower,
+                    drillCount: window.gameState.drillCount,
+                    cps: window.gameState.cps,
+                    upgrades: window.gameState.upgrades
+                };
+                
+                // Используем setDoc с merge: true, чтобы обновить, а не перезаписать
+                await setDoc(docRef, dataToSave, { merge: true });
+            } catch (error) {
+                console.error("Ошибка сохранения состояния игры:", error);
+            } finally {
+                isSaving = false;
+            }
+        }
+        
+        // --- ЛОГИКА ИГРЫ ---
+        
+        // Обновляет clickPower и cps на основе купленных улучшений
+        function recalculateStats() {
+            // Пересчет Click Power
+            let baseClickPower = 1;
+            window.gameData.clickUpgrades.forEach(upgrade => {
+                const level = window.gameState.upgrades[upgrade.id] || 0;
+                baseClickPower += (upgrade.multiplier - 1) * level;
+            });
+            window.gameState.clickPower = baseClickPower;
+
+            // Пересчет CPS (Crystals Per Second)
+            let baseCps = window.gameState.drillCount * window.gameData.drillCps;
+            window.gameData.cpsUpgrades.forEach(upgrade => {
+                const level = window.gameState.upgrades[upgrade.id] || 0;
+                // Применяем множитель на базовый CPS от буров
+                baseCps *= Math.pow(upgrade.multiplier, level);
+            });
+            window.gameState.cps = Math.round(baseCps * 10) / 10; // Округляем до 1 знака
+        }
+
+        // Обновление UI
+        function updateUI() {
+            const crystals = Math.floor(window.gameState.crystals);
+            document.getElementById('crystals-display').textContent = crystals.toLocaleString('ru-RU');
+            document.getElementById('cps-display').textContent = window.gameState.cps.toFixed(1);
+            document.getElementById('click-power-display').textContent = window.gameState.clickPower;
+            document.getElementById('drill-count-display').textContent = window.gameState.drillCount;
+            
+            // Обновление цен в магазине (буры)
+            const drillCost = Math.floor(window.gameData.drillCost * Math.pow(1.15, window.gameState.drillCount));
+            document.getElementById('drill-cost').textContent = drillCost.toLocaleString('ru-RU');
+            document.getElementById('buy-drill-btn').disabled = crystals < drillCost;
+            
+            // Обновление магазина улучшений
+            updateUpgradesSection('click-upgrades-list', window.gameData.clickUpgrades);
+            updateUpgradesSection('cps-upgrades-list', window.gameData.cpsUpgrades);
+        }
+        
+        function updateUpgradesSection(containerId, upgrades) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = ''; // Очистка
+            
+            upgrades.forEach(upgrade => {
+                const currentLevel = window.gameState.upgrades[upgrade.id] || 0;
+                const nextCost = Math.floor(upgrade.cost * Math.pow(2, currentLevel));
+                const isDisabled = window.gameState.crystals < nextCost || currentLevel >= upgrade.maxLevel;
+                const progress = (currentLevel / upgrade.maxLevel) * 100;
+
+                const buttonText = currentLevel < upgrade.maxLevel 
+                    ? `Улучшить (${nextCost.toLocaleString('ru-RU')} Cr)`
+                    : 'Макс. Уровень';
+                
+                const element = `
+                    <div class="p-3 bg-gray-700 rounded-lg shadow-md mb-2 flex flex-col sm:flex-row justify-between items-center transition duration-300 hover:bg-gray-600">
+                        <div class="text-left w-full sm:w-2/3">
+                            <p class="text-white font-bold">${upgrade.name}</p>
+                            <p class="text-sm text-gray-400">Ур. ${currentLevel} / ${upgrade.maxLevel} (x${upgrade.multiplier} эффект)</p>
+                            <div class="h-1 mt-1 bg-gray-500 rounded">
+                                <div style="width: ${progress}%;" class="h-full bg-blue-500 rounded"></div>
+                            </div>
+                        </div>
+                        <button id="upgrade-${upgrade.id}" 
+                                class="mt-2 sm:mt-0 px-4 py-2 text-sm font-semibold rounded-lg transition duration-150 ${isDisabled ? 'bg-gray-500 text-gray-300 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 text-white'}"
+                                onclick="buyUpgrade('${upgrade.id}')"
+                                ${isDisabled ? 'disabled' : ''}>
+                            ${buttonText}
+                        </button>
+                    </div>
+                `;
+                container.innerHTML += element;
+            });
+        }
+
+        window.manualClick = function() {
+            const amount = window.gameState.clickPower;
+            window.gameState.crystals += amount;
+            updateUI();
+            
+            // Визуальный эффект
+            const crystalEl = document.getElementById('crystal-button');
+            const popup = document.createElement('div');
+            popup.textContent = `+${amount}`;
+            popup.className = 'absolute text-yellow-300 font-extrabold text-2xl pointer-events-none transition-all duration-500 ease-out opacity-0';
+            popup.style.left = `${Math.random() * 80 + 10}%`;
+            popup.style.top = `${Math.random() * 80 + 10}%`;
+            crystalEl.appendChild(popup);
+            
+            // Запуск анимации
+            setTimeout(() => {
+                popup.style.transform = 'translateY(-50px)';
+                popup.style.opacity = '1';
+            }, 10);
+            
+            // Удаление
+            setTimeout(() => {
+                popup.remove();
+            }, 500);
+        }
+
+        window.buyDrill = function() {
+            const drillCost = Math.floor(window.gameData.drillCost * Math.pow(1.15, window.gameState.drillCount));
+            if (window.gameState.crystals >= drillCost) {
+                window.gameState.crystals -= drillCost;
+                window.gameState.drillCount += 1;
+                recalculateStats(); // Пересчитываем CPS, так как количество буров изменилось
+                updateUI();
+                window.saveGameState(); // Сохраняем после покупки
+            }
+        }
+
+        window.buyUpgrade = function(upgradeId) {
+            let upgrade;
+            let upgradeList;
+            
+            // Ищем улучшение в обоих списках
+            upgrade = window.gameData.clickUpgrades.find(u => u.id === upgradeId);
+            if (!upgrade) {
+                upgrade = window.gameData.cpsUpgrades.find(u => u.id === upgradeId);
+            }
+
+            if (!upgrade) return;
+
+            const currentLevel = window.gameState.upgrades[upgradeId] || 0;
+            if (currentLevel >= upgrade.maxLevel) return;
+
+            const cost = Math.floor(upgrade.cost * Math.pow(2, currentLevel));
+            
+            if (window.gameState.crystals >= cost) {
+                window.gameState.crystals -= cost;
+                window.gameState.upgrades[upgradeId] = currentLevel + 1;
+                
+                recalculateStats(); // Обновляем clickPower или CPS
+                updateUI();
+                window.saveGameState(); // Сохраняем после покупки
+            }
+        }
+        
+        // --- ОСНОВНОЙ ЦИКЛ ИГРЫ ---
+        function gameLoop() {
+            // 1. Пассивный доход (Idle)
+            if (window.gameState.cps > 0) {
+                window.gameState.crystals += window.gameState.cps / 5; // Делим на 5, так как цикл 5 раз в секунду
+            }
+            
+            // 2. Сохранение (экономим записи в базу)
+            if (Date.now() % 5000 < 200) { // Сохраняем каждые ~5 секунд
+                window.saveGameState();
+            }
+
+            // 3. Обновление интерфейса
+            updateUI();
+        }
+
+        // Запуск инициализации и цикла игры
+        window.onload = function() {
+            initFirebase();
+            // Запускаем игровой цикл 5 раз в секунду (для плавности пассивной добычи)
+            setInterval(gameLoop, 200); 
+        };
+        
+        // Добавляем обработчик на случай закрытия для последнего сохранения
+        window.addEventListener('beforeunload', () => {
+             window.saveGameState();
+        });
+
+    </script>
+</head>
+
+<body class="bg-miner text-gray-100 min-h-screen">
+
+    <div class="max-w-4xl mx-auto p-4 md:p-8">
+        <!-- Заголовок и Информация о пользователе -->
+        <header class="text-center mb-6">
+            <h1 class="text-4xl font-extrabold text-blue-400">Ферма Кристаллов 💎</h1>
+            <p class="text-sm text-gray-400 mt-1">Кликер-фармилка с облачным сохранением</p>
+            <p id="user-id" class="text-xs text-gray-500 mt-1"></p>
+        </header>
+
+        <!-- Состояние загрузки -->
+        <div id="loading-state" class="text-center p-10 bg-gray-800 rounded-xl shadow-lg">
+            <p class="text-lg text-blue-400 animate-pulse">Загрузка данных из облака...</p>
+        </div>
+
+        <!-- Основной контейнер игры (скрыт до загрузки данных) -->
+        <div id="game-container" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-8">
+
+            <!-- Столбец 1: Статистика и Кликер -->
+            <div class="lg:col-span-1 bg-gray-800 p-6 rounded-xl shadow-xl flex flex-col items-center">
+                <h2 class="text-2xl font-bold mb-4 text-center text-yellow-300">Статистика</h2>
+
+                <!-- Дисплей валюты -->
+                <div class="w-full text-center mb-6 p-4 bg-gray-700 rounded-lg">
+                    <p class="text-xl text-gray-400">Кристаллы (Cr):</p>
+                    <p id="crystals-display" class="text-5xl font-black text-white mt-1">0</p>
+                    <p class="text-sm text-green-400 mt-2">
+                        +<span id="cps-display">0.0</span>/сек | Клик: <span id="click-power-display">1</span>
+                    </p>
+                </div>
+
+                <!-- Кнопка кликера -->
+                <button id="crystal-button" 
+                        onclick="manualClick()" 
+                        class="relative w-48 h-48 bg-purple-700 rounded-full shadow-2xl flex items-center justify-center crystal-bounce transition duration-150 overflow-hidden border-4 border-purple-400">
+                    <span class="text-8xl" aria-label="Crystal Emoji">💎</span>
+                </button>
+                <p class="text-gray-400 mt-4">Нажмите на кристалл, чтобы добывать!</p>
+
+                <!-- Статистика буров -->
+                <div class="mt-6 w-full text-center p-3 bg-gray-700 rounded-lg">
+                    <p class="text-lg text-gray-300">Автоматические буры:</p>
+                    <p id="drill-count-display" class="text-3xl font-bold text-blue-300">0</p>
+                </div>
+            </div>
+
+            <!-- Столбец 2 и 3: Магазин -->
+            <div class="lg:col-span-2 bg-gray-800 p-6 rounded-xl shadow-xl">
+                <h2 class="text-2xl font-bold mb-4 text-blue-400">Магазин Улучшений</h2>
+
+                <!-- Секция: Буры (Idle Machines) -->
+                <div class="mb-6">
+                    <h3 class="text-xl font-semibold mb-3 text-white border-b border-gray-700 pb-2">Автоматические Буры (База CPS)</h3>
+                    <div class="p-3 bg-gray-700 rounded-lg shadow-md flex justify-between items-center">
+                        <div class="text-left">
+                            <p class="text-white font-bold">Купить Бур (дает +1.0 Cr/сек)</p>
+                            <p class="text-sm text-gray-400">Кол-во: <span id="drill-count-display-shop">0</span></p>
+                        </div>
+                        <button id="buy-drill-btn" 
+                                onclick="buyDrill()" 
+                                class="px-4 py-2 text-sm font-semibold rounded-lg transition duration-150 bg-yellow-600 hover:bg-yellow-700 text-white disabled:bg-gray-500 disabled:text-gray-300">
+                            Цена: <span id="drill-cost">10</span> Cr
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Секция: Прокачки (Click Multipliers) -->
+                <div class="mb-6">
+                    <h3 class="text-xl font-semibold mb-3 text-white border-b border-gray-700 pb-2">Улучшения Кликов (Множитель Click Power)</h3>
+                    <div id="click-upgrades-list" class="custom-scroll max-h-60 overflow-y-auto pr-2">
+                        <!-- Здесь JS сгенерирует улучшения кликов -->
+                    </div>
+                </div>
+                
+                <!-- Секция: Прокачки (CPS Multipliers) -->
+                <div>
+                    <h3 class="text-xl font-semibold mb-3 text-white border-b border-gray-700 pb-2">Улучшения CPS (Множитель Буров)</h3>
+                    <div id="cps-upgrades-list" class="custom-scroll max-h-60 overflow-y-auto pr-2">
+                        <!-- Здесь JS сгенерирует улучшения CPS -->
+                    </div>
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</body>
+</html>
