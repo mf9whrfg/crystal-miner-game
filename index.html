@@ -3,10 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ферма Кристаллов</title>
-    <!-- Tailwind CSS CDN -->
+    <title>Ферма Кристаллов (Локальное сохранение)</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Inter Font -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; }
@@ -31,9 +29,167 @@
             background: #1f2937;
         }
     </style>
-    <!-- Firebase Imports -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    <script>
+        
+        // --- Глобальное состояние игры (Начальные значения) ---
+        window.gameState = {
+            crystals: 0,
+            clickPower: 1, // Кристаллов за клик
+            drillCount: 0, // Количество автоматических буров
+            cps: 0,        // Кристаллов в секунду
+            upgrades: {}   // Купленные улучшения
+        };
+
+        window.gameData = {
+            // Стоимость буров (автодобыча)
+            drillCost: 10,
+            drillCps: 1,
+            // Улучшения клика
+            clickUpgrades: [
+                { id: 'click1', name: 'Магнитный Адаптер', cost: 50, multiplier: 2, currentLevel: 0, maxLevel: 5 },
+                { id: 'click2', name: 'Лазерная Гравировка', cost: 500, multiplier: 3, currentLevel: 0, maxLevel: 3 }
+            ],
+            // Улучшения CPS (буров)
+            cpsUpgrades: [
+                { id: 'cps1', name: 'Система Охлаждения', cost: 100, multiplier: 1.5, currentLevel: 0, maxLevel: 5 },
+                { id: 'cps2', name: 'Квантовый Чип', cost: 1000, multiplier: 2, currentLevel: 0, maxLevel: 3 }
+            ]
+        };
+        
+        const LOCAL_STORAGE_KEY = 'crystal_miner_save';
+        
+        // --- ФУНКЦИИ СОХРАНЕНИЯ/ЗАГРУЗКИ ---
+
+        function loadGameState() {
+            const savedData = localStorage.getItem(LOCAL_STORAGE_KEY);
+            if (savedData) {
+                try {
+                    const loadedState = JSON.parse(savedData);
+                    // Объединяем, чтобы сохранить дефолты, если что-то отсутствует
+                    window.gameState = { ...window.gameState, ...loadedState };
+                    console.log("Состояние игры загружено из LocalStorage.");
+                } catch (e) {
+                    console.error("Ошибка при парсинге данных LocalStorage:", e);
+                }
+            } else {
+                 console.log("Локальное сохранение не найдено. Начинаем новую игру.");
+            }
+
+            // После загрузки или создания состояния, пересчитываем CPS/ClickPower
+            recalculateStats();
+            // Скрываем загрузочный экран и показываем игру
+            document.getElementById('loading-state').classList.add('hidden');
+            document.getElementById('game-container').classList.remove('hidden');
+            updateUI();
+        }
+
+        window.saveGameState = function() {
+            try {
+                // Оставляем только нужные для сохранения поля
+                const dataToSave = {
+                    crystals: window.gameState.crystals,
+                    clickPower: window.gameState.clickPower,
+                    drillCount: window.gameState.drillCount,
+                    cps: window.gameState.cps,
+                    upgrades: window.gameState.upgrades
+                };
+                
+                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(dataToSave));
+            } catch (error) {
+                console.error("Ошибка сохранения состояния игры в LocalStorage:", error);
+            }
+        }
+        
+        // --- ЛОГИКА ИГРЫ (Остальное без изменений) ---
+        
+        // Обновляет clickPower и cps на основе купленных улучшений
+        function recalculateStats() {
+            // Пересчет Click Power
+            let baseClickPower = 1;
+            window.gameData.clickUpgrades.forEach(upgrade => {
+                const level = window.gameState.upgrades[upgrade.id] || 0;
+                baseClickPower += (upgrade.multiplier - 1) * level;
+            });
+            window.gameState.clickPower = Math.round(baseClickPower * 10) / 10; 
+
+            // Пересчет CPS (Crystals Per Second)
+            let baseCps = window.gameState.drillCount * window.gameData.drillCps;
+            let cpsMultiplier = 1; 
+            
+            window.gameData.cpsUpgrades.forEach(upgrade => {
+                const level = window.gameState.upgrades[upgrade.id] || 0;
+                cpsMultiplier *= Math.pow(upgrade.multiplier, level);
+            });
+            
+            window.gameState.cps = Math.round(baseCps * cpsMultiplier * 10) / 10; 
+        }
+
+        // Обновление UI
+        function updateUI() {
+            const crystals = Math.floor(window.gameState.crystals);
+            document.getElementById('crystals-display').textContent = crystals.toLocaleString('ru-RU');
+            document.getElementById('cps-display').textContent = window.gameState.cps.toFixed(1);
+            document.getElementById('click-power-display').textContent = window.gameState.clickPower;
+            document.getElementById('drill-count-display').textContent = window.gameState.drillCount;
+            document.getElementById('drill-count-display-2').textContent = window.gameState.drillCount;
+            
+            // Обновление цен в магазине (буры)
+            const drillCost = Math.floor(window.gameData.drillCost * Math.pow(1.15, window.gameState.drillCount));
+            document.getElementById('drill-cost').textContent = drillCost.toLocaleString('ru-RU');
+            document.getElementById('buy-drill-btn').disabled = crystals < drillCost;
+            
+            // Обновление магазина улучшений
+            updateUpgradesSection('click-upgrades-list', window.gameData.clickUpgrades);
+            updateUpgradesSection('cps-upgrades-list', window.gameData.cpsUpgrades);
+        }
+        
+        function updateUpgradesSection(containerId, upgrades) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = ''; // Очистка
+            
+            upgrades.forEach(upgrade => {
+                const currentLevel = window.gameState.upgrades[upgrade.id] || 0;
+                // Стоимость растет экспоненциально (base_cost * 2^level)
+                const nextCost = Math.floor(upgrade.cost * Math.pow(2, currentLevel));
+                const isDisabled = window.gameState.crystals < nextCost || currentLevel >= upgrade.maxLevel;
+                const progress = (currentLevel / upgrade.maxLevel) * 100;
+
+                const buttonText = currentLevel < upgrade.maxLevel 
+                    ? `Улучшить (${nextCost.toLocaleString('ru-RU')} Cr)`
+                    : 'Макс. Уровень';
+                
+                const element = `
+                    <div class="p-3 bg-gray-700 rounded-lg shadow-md mb-2 flex flex-col sm:flex-row justify-between items-center transition duration-300 hover:bg-gray-600">
+                        <div class="text-left w-full sm:w-2/3">
+                            <p class="text-white font-bold">${upgrade.name}</p>
+                            <p class="text-sm text-gray-400">Ур. ${currentLevel} / ${upgrade.maxLevel} (x${upgrade.multiplier} эффект)</p>
+                            <div class="h-1 mt-1 bg-gray-500 rounded">
+                                <div style="width: ${progress}%;" class="h-full bg-blue-500 rounded"></div>
+                            </div>
+                        </div>
+                        <button id="upgrade-${upgrade.id}" 
+                                class="mt-2 sm:mt-0 px-4 py-2 text-sm font-semibold rounded-lg transition duration-150 ${isDisabled ? 'bg-gray-500 text-gray-300 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 text-white'}"
+                                onclick="buyUpgrade('${upgrade.id}')"
+                                ${isDisabled ? 'disabled' : ''}>
+                            ${buttonText}
+                        </button>
+                    </div>
+                `;
+                container.innerHTML += element;
+            });
+        }
+
+        window.manualClick = function() {
+            const amount = window.gameState.clickPower;
+            window.gameState.crystals += amount;
+            updateUI();
+            
+            // Визуальный эффект
+            const crystalEl = document.getElementById('crystal-button');
+            const popup = document.createElement('div');
+            popup.textContent = `+${amount}`;
+            popup.className = 'absolute text-yellow-300 font-extrabold text-2xl pointer-events-none transition-all duration-500 ease-out opacity-0';
+            popup.style.left = `${Math.random() * 80 + 1
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
