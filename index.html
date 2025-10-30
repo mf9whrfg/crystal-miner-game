@@ -37,18 +37,19 @@
             upgrades: {}   
         };
 
-        window.gameState = { ...INITIAL_STATE }; // Используем для хранения текущего состояния
+        window.gameState = { ...INITIAL_STATE };
 
         window.gameData = {
             drillCost: 10,
             drillCps: 1,
+            // Максимальный уровень (maxLevel) теперь используется для ограничения
             clickUpgrades: [
-                { id: 'click1', name: 'Магнитный Адаптер', cost: 50, multiplier: 2, currentLevel: 0, maxLevel: 5 },
-                { id: 'click2', name: 'Лазерная Гравировка', cost: 500, multiplier: 3, currentLevel: 0, maxLevel: 3 }
+                { id: 'click1', name: 'Магнитный Адаптер', cost: 50, multiplier: 2, maxLevel: 5 },
+                { id: 'click2', name: 'Лазерная Гравировка', cost: 500, multiplier: 3, maxLevel: 3 }
             ],
             cpsUpgrades: [
-                { id: 'cps1', name: 'Система Охлаждения', cost: 100, multiplier: 1.5, currentLevel: 0, maxLevel: 5 },
-                { id: 'cps2', name: 'Квантовый Чип', cost: 1000, multiplier: 2, currentLevel: 0, maxLevel: 3 }
+                { id: 'cps1', name: 'Система Охлаждения', cost: 100, multiplier: 1.5, maxLevel: 5 },
+                { id: 'cps2', name: 'Квантовый Чип', cost: 1000, multiplier: 2, maxLevel: 3 }
             ]
         };
         
@@ -61,7 +62,6 @@
             if (savedData) {
                 try {
                     const loadedState = JSON.parse(savedData);
-                    // Объединяем, чтобы сохранить дефолты, если что-то отсутствует
                     window.gameState = { ...INITIAL_STATE, ...loadedState };
                     console.log("Состояние игры загружено из LocalStorage.");
                 } catch (e) {
@@ -101,7 +101,6 @@
             let baseClickPower = 1;
             window.gameData.clickUpgrades.forEach(upgrade => {
                 const level = window.gameState.upgrades[upgrade.id] || 0;
-                // Эффект: + (множитель - 1) * уровень к базовой силе
                 baseClickPower += (upgrade.multiplier - 1) * level;
             });
             window.gameState.clickPower = Math.round(baseClickPower * 10) / 10; 
@@ -112,7 +111,6 @@
             
             window.gameData.cpsUpgrades.forEach(upgrade => {
                 const level = window.gameState.upgrades[upgrade.id] || 0;
-                // Множитель: 1.5 ^ уровень, 2 ^ уровень и т.д.
                 cpsMultiplier *= Math.pow(upgrade.multiplier, level);
             });
             
@@ -136,31 +134,48 @@
             updateUpgradesSection('cps-upgrades-list', window.gameData.cpsUpgrades);
         }
         
+        // ИЗМЕНЕНА: Логика отображения кнопки "Макс. Уровень"
         function updateUpgradesSection(containerId, upgrades) {
             const container = document.getElementById(containerId);
             container.innerHTML = ''; 
             
             upgrades.forEach(upgrade => {
                 const currentLevel = window.gameState.upgrades[upgrade.id] || 0;
+                const isMaxLevel = currentLevel >= upgrade.maxLevel; // Проверка на максимальный уровень
+                
+                // Стоимость растет экспоненциально (base_cost * 2^level)
                 const nextCost = Math.floor(upgrade.cost * Math.pow(2, currentLevel));
-                const isDisabled = window.gameState.crystals < nextCost || currentLevel >= upgrade.maxLevel;
+                
+                // Кнопка недоступна, если кристаллов меньше или достигнут макс. уровень
+                const isDisabled = window.gameState.crystals < nextCost || isMaxLevel; 
                 const progress = (currentLevel / upgrade.maxLevel) * 100;
 
-                const buttonText = currentLevel < upgrade.maxLevel 
-                    ? `Улучшить (${nextCost.toLocaleString('ru-RU')} Cr)`
-                    : 'Макс. Уровень';
-                
+                // --- ЛОГИКА ИЗМЕНЕНИЯ КНОПКИ ---
+                let buttonText;
+                let buttonClass;
+
+                if (isMaxLevel) {
+                    buttonText = 'МАКС. УРОВЕНЬ';
+                    buttonClass = 'bg-blue-900 text-blue-300 cursor-not-allowed'; // Новый стиль для макс. уровня
+                } else {
+                    buttonText = `Улучшить (${nextCost.toLocaleString('ru-RU')} Cr)`;
+                    buttonClass = isDisabled 
+                        ? 'bg-gray-500 text-gray-300 cursor-not-allowed' 
+                        : 'bg-green-600 hover:bg-green-700 text-white';
+                }
+                // --- КОНЕЦ ЛОГИКИ ИЗМЕНЕНИЯ КНОПКИ ---
+
                 const element = `
                     <div class="p-3 bg-gray-700 rounded-lg shadow-md mb-2 flex flex-col sm:flex-row justify-between items-center transition duration-300 hover:bg-gray-600">
                         <div class="text-left w-full sm:w-2/3">
                             <p class="text-white font-bold">${upgrade.name}</p>
                             <p class="text-sm text-gray-400">Ур. ${currentLevel} / ${upgrade.maxLevel} (x${upgrade.multiplier} эффект)</p>
                             <div class="h-1 mt-1 bg-gray-500 rounded">
-                                <div style="width: ${progress}%;" class="h-full bg-blue-500 rounded"></div>
+                                <div style="width: ${progress}%;" class="h-full ${isMaxLevel ? 'bg-blue-300' : 'bg-blue-500'} rounded"></div>
                             </div>
                         </div>
                         <button id="upgrade-${upgrade.id}" 
-                                class="mt-2 sm:mt-0 px-4 py-2 text-sm font-semibold rounded-lg transition duration-150 ${isDisabled ? 'bg-gray-500 text-gray-300 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 text-white'}"
+                                class="mt-2 sm:mt-0 px-4 py-2 text-sm font-semibold rounded-lg transition duration-150 ${buttonClass}"
                                 onclick="buyUpgrade('${upgrade.id}')"
                                 ${isDisabled ? 'disabled' : ''}>
                             ${buttonText}
@@ -205,7 +220,8 @@
                 window.saveGameState(); 
             }
         }
-
+        
+        // ИЗМЕНЕНА: Проверка на максимальный уровень
         window.buyUpgrade = function(upgradeId) {
             let upgrade;
             
@@ -217,7 +233,10 @@
             if (!upgrade) return;
 
             const currentLevel = window.gameState.upgrades[upgradeId] || 0;
+            
+            // --- ПРОВЕРКА НА МАКСИМАЛЬНЫЙ УРОВЕНЬ ---
             if (currentLevel >= upgrade.maxLevel) return;
+            // --- КОНЕЦ ПРОВЕРКИ ---
 
             const cost = Math.floor(upgrade.cost * Math.pow(2, currentLevel));
             
@@ -233,18 +252,14 @@
         
         // --- ОСНОВНОЙ ЦИКЛ ИГРЫ ---
         function gameLoop() {
-            // 1. Пассивный доход (Idle)
             if (window.gameState.cps > 0) {
-                // Добавляем доход, разделенный на 5 (так как цикл 5 раз в секунду)
                 window.gameState.crystals += window.gameState.cps / 5; 
             }
             
-            // 2. Сохранение (экономим записи, сохраняем каждые ~5 секунд)
             if (Date.now() % 5000 < 200) { 
                 window.saveGameState();
             }
 
-            // 3. Обновление интерфейса
             updateUI();
         }
 
@@ -334,5 +349,4 @@
         </div>
     </div>
 </body>
-                    </html>
-                            
+</html>
