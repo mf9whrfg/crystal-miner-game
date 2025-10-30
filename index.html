@@ -3,21 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ферма Кристаллов (Локальное сохранение)</title>
+    <title>Ферма Кристаллов</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; }
-        /* Пользовательский стиль для градиента фона */
         .bg-miner {
             background: linear-gradient(135deg, #1f2937 0%, #0d0e12 100%);
         }
-        /* Анимация клика (кратковременное увеличение) */
         .crystal-bounce:active {
             transform: scale(1.05);
             transition: transform 0.1s ease-out;
         }
-        /* Стили для кастомного скроллбара */
         .custom-scroll::-webkit-scrollbar {
             width: 6px;
         }
@@ -32,24 +29,23 @@
     <script>
         
         // --- Глобальное состояние игры (Начальные значения) ---
-        window.gameState = {
+        const INITIAL_STATE = {
             crystals: 0,
-            clickPower: 1, // Кристаллов за клик
-            drillCount: 0, // Количество автоматических буров
-            cps: 0,        // Кристаллов в секунду
-            upgrades: {}   // Купленные улучшения
+            clickPower: 1, 
+            drillCount: 0, 
+            cps: 0,        
+            upgrades: {}   
         };
 
+        window.gameState = { ...INITIAL_STATE }; // Используем для хранения текущего состояния
+
         window.gameData = {
-            // Стоимость буров (автодобыча)
             drillCost: 10,
             drillCps: 1,
-            // Улучшения клика
             clickUpgrades: [
                 { id: 'click1', name: 'Магнитный Адаптер', cost: 50, multiplier: 2, currentLevel: 0, maxLevel: 5 },
                 { id: 'click2', name: 'Лазерная Гравировка', cost: 500, multiplier: 3, currentLevel: 0, maxLevel: 3 }
             ],
-            // Улучшения CPS (буров)
             cpsUpgrades: [
                 { id: 'cps1', name: 'Система Охлаждения', cost: 100, multiplier: 1.5, currentLevel: 0, maxLevel: 5 },
                 { id: 'cps2', name: 'Квантовый Чип', cost: 1000, multiplier: 2, currentLevel: 0, maxLevel: 3 }
@@ -66,18 +62,17 @@
                 try {
                     const loadedState = JSON.parse(savedData);
                     // Объединяем, чтобы сохранить дефолты, если что-то отсутствует
-                    window.gameState = { ...window.gameState, ...loadedState };
+                    window.gameState = { ...INITIAL_STATE, ...loadedState };
                     console.log("Состояние игры загружено из LocalStorage.");
                 } catch (e) {
                     console.error("Ошибка при парсинге данных LocalStorage:", e);
+                    window.gameState = { ...INITIAL_STATE };
                 }
             } else {
                  console.log("Локальное сохранение не найдено. Начинаем новую игру.");
             }
 
-            // После загрузки или создания состояния, пересчитываем CPS/ClickPower
             recalculateStats();
-            // Скрываем загрузочный экран и показываем игру
             document.getElementById('loading-state').classList.add('hidden');
             document.getElementById('game-container').classList.remove('hidden');
             updateUI();
@@ -85,7 +80,6 @@
 
         window.saveGameState = function() {
             try {
-                // Оставляем только нужные для сохранения поля
                 const dataToSave = {
                     crystals: window.gameState.crystals,
                     clickPower: window.gameState.clickPower,
@@ -100,14 +94,14 @@
             }
         }
         
-        // --- ЛОГИКА ИГРЫ (Остальное без изменений) ---
+        // --- ЛОГИКА ИГРЫ ---
         
-        // Обновляет clickPower и cps на основе купленных улучшений
         function recalculateStats() {
             // Пересчет Click Power
             let baseClickPower = 1;
             window.gameData.clickUpgrades.forEach(upgrade => {
                 const level = window.gameState.upgrades[upgrade.id] || 0;
+                // Эффект: + (множитель - 1) * уровень к базовой силе
                 baseClickPower += (upgrade.multiplier - 1) * level;
             });
             window.gameState.clickPower = Math.round(baseClickPower * 10) / 10; 
@@ -118,6 +112,7 @@
             
             window.gameData.cpsUpgrades.forEach(upgrade => {
                 const level = window.gameState.upgrades[upgrade.id] || 0;
+                // Множитель: 1.5 ^ уровень, 2 ^ уровень и т.д.
                 cpsMultiplier *= Math.pow(upgrade.multiplier, level);
             });
             
@@ -133,23 +128,20 @@
             document.getElementById('drill-count-display').textContent = window.gameState.drillCount;
             document.getElementById('drill-count-display-2').textContent = window.gameState.drillCount;
             
-            // Обновление цен в магазине (буры)
             const drillCost = Math.floor(window.gameData.drillCost * Math.pow(1.15, window.gameState.drillCount));
             document.getElementById('drill-cost').textContent = drillCost.toLocaleString('ru-RU');
             document.getElementById('buy-drill-btn').disabled = crystals < drillCost;
             
-            // Обновление магазина улучшений
             updateUpgradesSection('click-upgrades-list', window.gameData.clickUpgrades);
             updateUpgradesSection('cps-upgrades-list', window.gameData.cpsUpgrades);
         }
         
         function updateUpgradesSection(containerId, upgrades) {
             const container = document.getElementById(containerId);
-            container.innerHTML = ''; // Очистка
+            container.innerHTML = ''; 
             
             upgrades.forEach(upgrade => {
                 const currentLevel = window.gameState.upgrades[upgrade.id] || 0;
-                // Стоимость растет экспоненциально (base_cost * 2^level)
                 const nextCost = Math.floor(upgrade.cost * Math.pow(2, currentLevel));
                 const isDisabled = window.gameState.crystals < nextCost || currentLevel >= upgrade.maxLevel;
                 const progress = (currentLevel / upgrade.maxLevel) * 100;
@@ -193,13 +185,11 @@
             popup.style.top = `${Math.random() * 80 + 10}%`;
             crystalEl.appendChild(popup);
             
-            // Запуск анимации
             setTimeout(() => {
                 popup.style.transform = 'translateY(-50px)';
                 popup.style.opacity = '1';
             }, 10);
             
-            // Удаление
             setTimeout(() => {
                 popup.remove();
             }, 500);
@@ -210,16 +200,15 @@
             if (window.gameState.crystals >= drillCost) {
                 window.gameState.crystals -= drillCost;
                 window.gameState.drillCount += 1;
-                recalculateStats(); // Пересчитываем CPS, так как количество буров изменилось
+                recalculateStats(); 
                 updateUI();
-                window.saveGameState(); // Сохраняем после покупки
+                window.saveGameState(); 
             }
         }
 
         window.buyUpgrade = function(upgradeId) {
             let upgrade;
             
-            // Ищем улучшение в обоих списках
             upgrade = window.gameData.clickUpgrades.find(u => u.id === upgradeId);
             if (!upgrade) {
                 upgrade = window.gameData.cpsUpgrades.find(u => u.id === upgradeId);
@@ -236,9 +225,9 @@
                 window.gameState.crystals -= cost;
                 window.gameState.upgrades[upgradeId] = currentLevel + 1;
                 
-                recalculateStats(); // Обновляем clickPower или CPS
+                recalculateStats(); 
                 updateUI();
-                window.saveGameState(); // Сохраняем после покупки
+                window.saveGameState(); 
             }
         }
         
@@ -246,7 +235,7 @@
         function gameLoop() {
             // 1. Пассивный доход (Idle)
             if (window.gameState.cps > 0) {
-                // Добавляем к кристаллам доход, разделенный на количество циклов в секунду (1000/200 = 5)
+                // Добавляем доход, разделенный на 5 (так как цикл 5 раз в секунду)
                 window.gameState.crystals += window.gameState.cps / 5; 
             }
             
@@ -261,16 +250,12 @@
 
         // Запуск инициализации и цикла игры
         window.onload = function() {
-            // 1. Загружаем данные
             loadGameState();
-            
-            // 2. Запускаем игровой цикл 5 раз в секунду
             setInterval(gameLoop, 200); 
         };
         
         // Добавляем обработчик на случай закрытия для последнего сохранения
         window.addEventListener('beforeunload', () => {
-             // Пытаемся сохранить последний раз перед закрытием
              window.saveGameState();
         });
 
@@ -349,5 +334,5 @@
         </div>
     </div>
 </body>
-    </html>
-    
+                    </html>
+                            
